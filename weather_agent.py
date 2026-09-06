@@ -1,32 +1,24 @@
 import os
 import json
+import time
 import requests
 import smtplib
 
 from pathlib import Path
 from email.message import EmailMessage
+
 from dotenv import load_dotenv
 from google import genai
 
 
 # ============================================================
-# CONFIGURATION
+# LOAD ENVIRONMENT VARIABLES
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# Local development:
-# Loads credentials from .env.txt if it exists.
-#
-# GitHub Actions:
-# .env.txt will NOT exist.
-# GitHub Secrets will be provided as environment variables.
 load_dotenv(BASE_DIR / ".env.txt")
 
-
-# ============================================================
-# ENVIRONMENT VARIABLES
-# ============================================================
 
 api_key = os.getenv("GEMINI_API_KEY")
 gmail_address = os.getenv("GMAIL_ADDRESS")
@@ -51,9 +43,7 @@ if not email_to:
 # GEMINI CLIENT
 # ============================================================
 
-client = genai.Client(
-    api_key=api_key
-)
+client = genai.Client(api_key=api_key)
 
 
 # ============================================================
@@ -61,9 +51,6 @@ client = genai.Client(
 # ============================================================
 
 def get_weather(city):
-    """
-    Gets today's weather information for a city.
-    """
 
     print(f"\n🔧 TOOL CALLED: get_weather({city})")
 
@@ -89,32 +76,91 @@ def get_weather(city):
         "timezone": "Asia/Kolkata"
     }
 
-    response = requests.get(
-        url,
-        params=params,
-        timeout=30
-    )
 
-    response.raise_for_status()
+    # --------------------------------------------------------
+    # RETRY WEATHER API UP TO 3 TIMES
+    # --------------------------------------------------------
 
-    data = response.json()
+    for attempt in range(3):
+
+        try:
+
+            response = requests.get(
+                url,
+                params=params,
+                timeout=30
+            )
+
+            response.raise_for_status()
+
+            data = response.json()
+
+            print(
+                f"✅ Weather API succeeded "
+                f"on attempt {attempt + 1}"
+            )
+
+            break
+
+
+        except requests.exceptions.RequestException as e:
+
+            print(
+                f"⚠️ Weather API attempt "
+                f"{attempt + 1} failed: {e}"
+            )
+
+
+            # Final attempt failed
+            if attempt == 2:
+
+                raise RuntimeError(
+                    "Weather API unavailable after 3 attempts."
+                )
+
+
+            # Wait before retrying
+            wait_seconds = 2 * (attempt + 1)
+
+            print(
+                f"⏳ Waiting {wait_seconds} seconds "
+                f"before retry..."
+            )
+
+            time.sleep(wait_seconds)
+
+
+    # --------------------------------------------------------
+    # EXTRACT WEATHER DATA
+    # --------------------------------------------------------
 
     current = data["current"]
+
     daily = data["daily"]
 
-    weather = {
-        "city": city,
-        "current_temperature_c": current["temperature_2m"],
-        "humidity_percent": current["relative_humidity_2m"],
-        "wind_speed_kmh": current["wind_speed_10m"],
-        "today_high_c": daily["temperature_2m_max"][0],
-        "today_low_c": daily["temperature_2m_min"][0],
-        "rain_probability_percent": (
-            daily["precipitation_probability_max"][0]
-        )
-    }
 
-    return weather
+    return {
+
+        "city": city,
+
+        "current_temperature_c":
+            current["temperature_2m"],
+
+        "humidity_percent":
+            current["relative_humidity_2m"],
+
+        "wind_speed_kmh":
+            current["wind_speed_10m"],
+
+        "today_high_c":
+            daily["temperature_2m_max"][0],
+
+        "today_low_c":
+            daily["temperature_2m_min"][0],
+
+        "rain_probability_percent":
+            daily["precipitation_probability_max"][0]
+    }
 
 
 # ============================================================
@@ -122,27 +168,35 @@ def get_weather(city):
 # ============================================================
 
 def send_email(subject, body):
-    """
-    Sends the weather report through Gmail SMTP.
-    """
 
     print("\n🔧 TOOL CALLED: send_email()")
+
 
     message = EmailMessage()
 
     message["Subject"] = subject
+
     message["From"] = gmail_address
 
+
+    # Support multiple recipients
     recipients = [
+
         email.strip()
+
         for email in email_to.split(",")
+
         if email.strip()
     ]
 
+
     message["To"] = ", ".join(recipients)
+
 
     message.set_content(body)
 
+
+    # Connect to Gmail SMTP
     with smtplib.SMTP(
         "smtp.gmail.com",
         587
@@ -157,9 +211,13 @@ def send_email(subject, body):
 
         server.send_message(message)
 
+
     return {
+
         "status": "success",
-        "message": "Email sent successfully"
+
+        "message":
+            "Email sent successfully"
     }
 
 
@@ -168,21 +226,29 @@ def send_email(subject, body):
 # ============================================================
 
 weather_tool = {
+
     "type": "function",
+
     "name": "get_weather",
-    "description": (
-        "Gets today's weather information for a city."
-    ),
+
+    "description":
+        "Gets today's weather information for a city.",
+
     "parameters": {
+
         "type": "object",
+
         "properties": {
+
             "city": {
+
                 "type": "string",
-                "description": (
+
+                "description":
                     "The city to get weather information for."
-                )
             }
         },
+
         "required": [
             "city"
         ]
@@ -195,27 +261,37 @@ weather_tool = {
 # ============================================================
 
 email_tool = {
+
     "type": "function",
+
     "name": "send_email",
-    "description": (
-        "Sends an email containing a subject and message."
-    ),
+
+    "description":
+        "Sends an email containing a subject and message.",
+
     "parameters": {
+
         "type": "object",
+
         "properties": {
+
             "subject": {
+
                 "type": "string",
-                "description": (
+
+                "description":
                     "The subject of the email."
-                )
             },
+
             "body": {
+
                 "type": "string",
-                "description": (
+
+                "description":
                     "The complete message to send."
-                )
             }
         },
+
         "required": [
             "subject",
             "body"
@@ -229,8 +305,11 @@ email_tool = {
 # ============================================================
 
 tools = [
+
     weather_tool,
+
     email_tool
+
 ]
 
 
@@ -239,6 +318,7 @@ tools = [
 # ============================================================
 
 user_question = """
+
 You are a helpful daily weather assistant.
 
 Get today's weather for Vijayawada.
@@ -290,6 +370,7 @@ use the send_email tool to send the report.
 
 Do not send the email before obtaining the
 weather data.
+
 """
 
 
@@ -298,12 +379,20 @@ weather data.
 # ============================================================
 
 print("\n🤖 STARTING WEATHER AI AGENT")
+
 print("============================")
 
 
+# ============================================================
+# FIRST GEMINI INTERACTION
+# ============================================================
+
 interaction = client.interactions.create(
+
     model="gemini-3.5-flash-lite",
+
     input=user_question,
+
     tools=tools
 )
 
@@ -316,7 +405,11 @@ while True:
 
     tool_call = None
 
-    # Search Gemini response for a function call
+
+    # --------------------------------------------------------
+    # LOOK FOR A TOOL CALL
+    # --------------------------------------------------------
+
     for step in interaction.steps:
 
         if step.type == "function_call":
@@ -338,14 +431,19 @@ while True:
             break
 
 
-    # ========================================================
-    # AGENT FINISHED
-    # ========================================================
+    # --------------------------------------------------------
+    # NO MORE TOOLS = AGENT FINISHED
+    # --------------------------------------------------------
 
     if not tool_call:
 
-        print("\n🤖 FINAL AI RESPONSE")
-        print("====================")
+        print(
+            "\n🤖 FINAL AI RESPONSE"
+        )
+
+        print(
+            "===================="
+        )
 
         print(
             interaction.output_text
@@ -354,20 +452,21 @@ while True:
         break
 
 
-    # ========================================================
-    # PARSE TOOL ARGUMENTS
-    # ========================================================
+    # --------------------------------------------------------
+    # READ TOOL ARGUMENTS
+    # --------------------------------------------------------
 
     arguments = tool_call.arguments
+
 
     if isinstance(arguments, str):
 
         arguments = json.loads(arguments)
 
 
-    # ========================================================
+    # --------------------------------------------------------
     # EXECUTE WEATHER TOOL
-    # ========================================================
+    # --------------------------------------------------------
 
     if tool_call.name == "get_weather":
 
@@ -376,9 +475,9 @@ while True:
         result = get_weather(city)
 
 
-    # ========================================================
+    # --------------------------------------------------------
     # EXECUTE EMAIL TOOL
-    # ========================================================
+    # --------------------------------------------------------
 
     elif tool_call.name == "send_email":
 
@@ -392,26 +491,32 @@ while True:
         )
 
 
-    # ========================================================
+    # --------------------------------------------------------
     # UNKNOWN TOOL
-    # ========================================================
+    # --------------------------------------------------------
 
     else:
 
         result = {
+
             "status": "error",
-            "message": (
+
+            "message":
                 f"Unknown tool: {tool_call.name}"
-            )
         }
 
 
-    # ========================================================
+    # --------------------------------------------------------
     # DISPLAY TOOL RESULT
-    # ========================================================
+    # --------------------------------------------------------
 
-    print("\n🔧 TOOL RESULT")
-    print("==============")
+    print(
+        "\n🔧 TOOL RESULT"
+    )
+
+    print(
+        "=============="
+    )
 
     print(
         json.dumps(
@@ -421,9 +526,9 @@ while True:
     )
 
 
-    # ========================================================
+    # --------------------------------------------------------
     # SEND TOOL RESULT BACK TO GEMINI
-    # ========================================================
+    # --------------------------------------------------------
 
     interaction = client.interactions.create(
 
@@ -432,18 +537,27 @@ while True:
         previous_interaction_id=interaction.id,
 
         input=[
+
             {
-                "type": "function_result",
 
-                "name": tool_call.name,
+                "type":
+                    "function_result",
 
-                "call_id": tool_call.id,
+                "name":
+                    tool_call.name,
+
+                "call_id":
+                    tool_call.id,
 
                 "result": [
-                    {
-                        "type": "text",
 
-                        "text": json.dumps(result)
+                    {
+
+                        "type":
+                            "text",
+
+                        "text":
+                            json.dumps(result)
                     }
                 ]
             }
