@@ -1,0 +1,500 @@
+import os
+import json
+import requests
+import smtplib
+
+from email.message import EmailMessage
+from dotenv import load_dotenv
+from google import genai
+
+
+# ==================================================
+# 1. LOAD ENVIRONMENT VARIABLES
+# ==================================================
+
+load_dotenv(".env.txt")
+
+api_key = os.getenv("GEMINI_API_KEY")
+gmail_address = os.getenv("GMAIL_ADDRESS")
+gmail_app_password = os.getenv("GMAIL_APP_PASSWORD")
+email_to = os.getenv("EMAIL_TO")
+
+
+if not api_key:
+    raise ValueError("GEMINI_API_KEY not found in .env.txt")
+
+if not gmail_address:
+    raise ValueError("GMAIL_ADDRESS not found in .env.txt")
+
+if not gmail_app_password:
+    raise ValueError("GMAIL_APP_PASSWORD not found in .env.txt")
+
+if not email_to:
+    raise ValueError("EMAIL_TO not found in .env.txt")
+
+
+# ==================================================
+# 2. CONNECT TO GEMINI
+# ==================================================
+
+client = genai.Client(api_key=api_key)
+
+
+# ==================================================
+# 3. WEATHER TOOL
+# ==================================================
+
+def get_weather(city):
+
+    print(f"\n🔧 TOOL CALLED: get_weather({city})")
+
+    # Vijayawada coordinates
+    latitude = 16.5062
+    longitude = 80.6480
+
+    url = "https://api.open-meteo.com/v1/forecast"
+
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+
+        "current": (
+            "temperature_2m,"
+            "relative_humidity_2m,"
+            "wind_speed_10m"
+        ),
+
+        "daily": (
+            "temperature_2m_max,"
+            "temperature_2m_min,"
+            "precipitation_probability_max"
+        ),
+
+        "timezone": "Asia/Kolkata"
+    }
+
+
+    response = requests.get(url, params=params)
+
+    response.raise_for_status()
+
+    data = response.json()
+
+
+    current = data["current"]
+    daily = data["daily"]
+
+
+    weather_result = {
+
+        "city": city,
+
+        "current_temperature_c":
+            current["temperature_2m"],
+
+        "humidity_percent":
+            current["relative_humidity_2m"],
+
+        "wind_speed_kmh":
+            current["wind_speed_10m"],
+
+        "today_high_c":
+            daily["temperature_2m_max"][0],
+
+        "today_low_c":
+            daily["temperature_2m_min"][0],
+
+        "rain_probability_percent":
+            daily["precipitation_probability_max"][0]
+    }
+
+
+    return weather_result
+
+
+# ==================================================
+# 4. EMAIL TOOL
+# ==================================================
+
+def send_email(subject, body):
+
+    print("\n🔧 TOOL CALLED: send_email()")
+
+
+    message = EmailMessage()
+
+
+    # Email subject
+    message["Subject"] = subject
+
+
+    # Sender
+    message["From"] = gmail_address
+
+
+    # Multiple recipients
+    recipients = [
+        email.strip()
+        for email in email_to.split(",")
+    ]
+
+
+    message["To"] = ", ".join(recipients)
+
+
+    # Email body
+    message.set_content(body)
+
+
+    # Connect to Gmail
+    with smtplib.SMTP(
+        "smtp.gmail.com",
+        587
+    ) as server:
+
+        server.starttls()
+
+        server.login(
+            gmail_address,
+            gmail_app_password
+        )
+
+        server.send_message(message)
+
+
+    return {
+        "status": "success",
+        "message": "Email sent successfully"
+    }
+
+
+# ==================================================
+# 5. WEATHER TOOL DEFINITION FOR GEMINI
+# ==================================================
+
+weather_tool = {
+
+    "type": "function",
+
+    "name": "get_weather",
+
+    "description":
+        "Gets today's weather information for a city.",
+
+    "parameters": {
+
+        "type": "object",
+
+        "properties": {
+
+            "city": {
+
+                "type": "string",
+
+                "description":
+                    "The city to get weather information for."
+            }
+        },
+
+        "required": [
+            "city"
+        ]
+    }
+}
+
+
+# ==================================================
+# 6. EMAIL TOOL DEFINITION FOR GEMINI
+# ==================================================
+
+email_tool = {
+
+    "type": "function",
+
+    "name": "send_email",
+
+    "description":
+        "Sends an email containing a subject and message.",
+
+    "parameters": {
+
+        "type": "object",
+
+        "properties": {
+
+            "subject": {
+
+                "type": "string",
+
+                "description":
+                    "The subject of the email."
+            },
+
+            "body": {
+
+                "type": "string",
+
+                "description":
+                    "The complete message to send."
+            }
+        },
+
+        "required": [
+            "subject",
+            "body"
+        ]
+    }
+}
+
+
+# ==================================================
+# 7. GIVE GEMINI BOTH TOOLS
+# ==================================================
+
+tools = [
+    weather_tool,
+    email_tool
+]
+
+
+# ==================================================
+# 8. GIVE THE AGENT ITS TASK
+# ==================================================
+
+user_question = """
+
+You are a helpful daily weather assistant.
+
+Get today's weather for Vijayawada.
+
+Create a concise and friendly morning weather email.
+
+The email must:
+
+1. Start with:
+
+Good morning! 🌅
+
+2. Clearly show:
+
+- Current temperature
+- Today's high
+- Today's low
+- Humidity
+- Rain probability
+- Wind speed
+
+3. Give a practical recommendation based on
+the actual weather conditions.
+
+For example, if there is a high chance of rain,
+recommend carrying an umbrella or raincoat.
+
+4. Keep the wording natural and friendly.
+
+5. End with:
+
+Have a great day! 😊
+
+Do NOT use:
+
+Best regards
+Your Weather AI Agent
+Formal email signatures
+
+The email should feel like a friendly daily
+weather update.
+
+First get the weather data.
+
+Only after getting the weather data,
+use the send_email tool to send the report.
+
+"""
+
+
+# ==================================================
+# 9. START GEMINI
+# ==================================================
+
+interaction = client.interactions.create(
+
+    model="gemini-3.8-flash",
+
+    input=user_question,
+
+    tools=tools
+)
+
+
+# ==================================================
+# 10. AGENT LOOP
+# ==================================================
+
+while True:
+
+    tool_call = None
+
+
+    # ------------------------------------------------
+    # Look for a tool call from Gemini
+    # ------------------------------------------------
+
+    for step in interaction.steps:
+
+        if step.type == "function_call":
+
+            tool_call = step
+
+            print(
+                "\n🤖 GEMINI DECIDED TO USE A TOOL"
+            )
+
+            print(
+                f"Tool: {step.name}"
+            )
+
+            print(
+                f"Arguments: {step.arguments}"
+            )
+
+            break
+
+
+    # ------------------------------------------------
+    # No tool call = Gemini has finished
+    # ------------------------------------------------
+
+    if not tool_call:
+
+        print(
+            "\n🤖 FINAL AI RESPONSE"
+        )
+
+        print(
+            "===================="
+        )
+
+        print(
+            interaction.output_text
+        )
+
+        break
+
+
+    # ------------------------------------------------
+    # Read Gemini's arguments
+    # ------------------------------------------------
+
+    arguments = tool_call.arguments
+
+
+    if isinstance(arguments, str):
+
+        arguments = json.loads(arguments)
+
+
+    # =================================================
+    # 11. EXECUTE WEATHER TOOL
+    # =================================================
+
+    if tool_call.name == "get_weather":
+
+        city = arguments["city"]
+
+
+        result = get_weather(city)
+
+
+    # =================================================
+    # 12. EXECUTE EMAIL TOOL
+    # =================================================
+
+    elif tool_call.name == "send_email":
+
+        subject = arguments["subject"]
+
+        body = arguments["body"]
+
+
+        result = send_email(
+            subject,
+            body
+        )
+
+
+    # =================================================
+    # 13. UNKNOWN TOOL
+    # =================================================
+
+    else:
+
+        result = {
+
+            "status": "error",
+
+            "message":
+                f"Unknown tool: {tool_call.name}"
+        }
+
+
+    # ------------------------------------------------
+    # Show tool result
+    # ------------------------------------------------
+
+    print(
+        "\n🔧 TOOL RESULT"
+    )
+
+    print(
+        "=============="
+    )
+
+    print(
+        json.dumps(
+            result,
+            indent=2
+        )
+    )
+
+
+    # =================================================
+    # 14. SEND TOOL RESULT BACK TO GEMINI
+    # =================================================
+
+    interaction = client.interactions.create(
+
+        model="gemini-3.8-flash",
+
+        previous_interaction_id=
+            interaction.id,
+
+        input=[
+
+            {
+
+                "type":
+                    "function_result",
+
+                "name":
+                    tool_call.name,
+
+                "call_id":
+                    tool_call.id,
+
+                "result": [
+
+                    {
+
+                        "type":
+                            "text",
+
+                        "text":
+                            json.dumps(result)
+                    }
+                ]
+            }
+        ],
+
+        tools=tools
+    )
